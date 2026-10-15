@@ -21,10 +21,10 @@
   <p class="muted">第一次使用需要下載 OCR 引擎與語言資料，請保持網路連線。辨識完成後，主要處理在你的裝置上進行。</p>
 </section>
 <section class="panel"><div class="row" style="justify-content:space-between;margin-bottom:12px"><div><strong>辨識結果與檔名預覽</strong><div class="muted">可直接編輯字幕文字；辨識圖片下方 1/4 區域，忽略空格並將標點轉成全形。若判定沒有可辨識文字，預設命名為「表情包」。</div></div><span id="count" class="pill">0 張圖片</span></div>
-<div class="warn">注意：主要只辨識圖片最下方 1/4 區域，並使用放大、灰階與對比增強改善白字黑框字幕的辨識。繁體中文模式會移除 OCR 誤判出的英文字母。若沒有可信文字，會先命名為「表情包」；低信心結果仍需人工檢查。這個工具會產生新的 ZIP，不會直接修改原始檔案。</div>
+<div class="warn">注意：主要只辨識圖片最下方 1/4 區域，並使用放大、灰階與對比增強改善白字黑框字幕的辨識。繁體中文模式會移除 OCR 誤判出的英文字母。若沒有可信文字，會先命名為「表情包」；低信心結果仍需人工檢查。這個工具會嘗試下方區域、字幕候選裁切、灰階對比及二值化等多種版本；低信心結果請人工檢查。工具會產生新的 ZIP，不會直接修改原始檔案。</div>
 <div class="table-wrap"><table><thead><tr><th>圖片</th><th>原始檔名</th><th>辨識文字（可編輯）</th><th>預計新檔名</th><th>狀態</th></tr></thead><tbody id="results"><tr><td colspan="5" class="muted">選擇圖片後，結果會顯示在這裡。</td></tr></tbody></table></div>
 </section>
-<div class="footer">免費原型｜辨識圖片下方 1/4 區域，使用放大、灰階與對比增強；繁體中文模式會移除誤判出的英文字母。若找不到可信文字，暫以「表情包」命名，低信心結果需人工確認。OCR 使用 Tesseract.js，ZIP 使用 JSZip。第三方程式庫及語言資料需網路載入。大量圖片的速度取決於電腦效能與圖片尺寸；建議先以 10–20 張測試。公開部署時，請將本資料夾上傳至 GitHub Pages 等靜態網站託管服務。</div>
+<div class="footer">免費原型｜辨識圖片下方 1/4 區域，比較下方區域、字幕候選裁切、灰階對比及二值化的多次 OCR 結果；繁體中文模式會過濾英文字母。若找不到可信文字，暫以「表情包」命名，低信心結果需人工確認。OCR 使用 Tesseract.js，ZIP 使用 JSZip。第三方程式庫及語言資料需網路載入。大量圖片的速度取決於電腦效能與圖片尺寸；建議先以 10–20 張測試。公開部署時，請將本資料夾上傳至 GitHub Pages 等靜態網站託管服務。</div>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -45,10 +45,53 @@ $('drop').addEventListener('click',()=>$('fileInput').click());$('drop').addEven
 $('drop').addEventListener('dragover',e=>{e.preventDefault();$('drop').classList.add('drag')});$('drop').addEventListener('dragleave',()=> $('drop').classList.remove('drag'));$('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('drag');addFiles(e.dataTransfer.files)});
 $('clearBtn').addEventListener('click',()=>{if(busy)return;items.forEach(x=>URL.revokeObjectURL(x.url));items=[];render();$('progress').style.width='0%';setStatus('清單已清空。')});
 ['prefix','preserveExt'].forEach(id=>$(id).addEventListener('change',refreshNames));
-function prepareCrop(file){return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>{URL.revokeObjectURL(img.src);try{const cropH=Math.max(1,Math.ceil(img.naturalHeight*0.25));const scale=Math.min(3,Math.max(2,1800/Math.max(img.naturalWidth,cropH)));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(cropH*scale));const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,img.naturalHeight-cropH,img.naturalWidth,cropH,0,0,canvas.width,canvas.height);const im=ctx.getImageData(0,0,canvas.width,canvas.height);for(let i=0;i<im.data.length;i+=4){const gray=0.299*im.data[i]+0.587*im.data[i+1]+0.114*im.data[i+2];const contrast=Math.max(0,Math.min(255,(gray-128)*1.35+128));im.data[i]=im.data[i+1]=im.data[i+2]=contrast;}ctx.putImageData(im,0,0);img.src='';resolve(canvas)}catch(e){reject(e)}};img.onerror=()=>{URL.revokeObjectURL(img.src);reject(new Error('圖片讀取失敗'))};img.src=URL.createObjectURL(file)})}
+function loadImage(file){return new Promise((resolve,reject)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);resolve(img)};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('圖片讀取失敗'))};img.src=url})}
+function makeCanvas(w,h){const c=document.createElement('canvas');c.width=Math.max(1,Math.round(w));c.height=Math.max(1,Math.round(h));return c}
+async function prepareVariants(file){
+  const img=await loadImage(file), W=img.naturalWidth,H=img.naturalHeight;
+  // Search in the bottom quarter, but retain a little margin above the subtitle.
+  const y0=Math.floor(H*.72), cropH=H-y0;
+  const scale=Math.min(3,Math.max(2,1800/Math.max(W,cropH)));
+  const base=makeCanvas(W*scale,cropH*scale),bctx=base.getContext('2d',{willReadFrequently:true});
+  bctx.fillStyle='#fff';bctx.fillRect(0,0,base.width,base.height);
+  bctx.drawImage(img,0,y0,W,cropH,0,0,base.width,base.height);
+  // Try a tight crop around bright subtitle-like pixels. This is a heuristic, not a perfect detector.
+  const data=bctx.getImageData(0,0,base.width,base.height), {data: px,width: cw,height: ch}=data;
+  const rowCounts=new Uint32Array(ch), colCounts=new Uint32Array(cw);
+  for(let y=0;y<ch;y++)for(let x=0;x<cw;x++){
+    const i=(y*cw+x)*4, r=px[i],g=px[i+1],b=px[i+2];
+    const max=Math.max(r,g,b),min=Math.min(r,g,b),bright=(r*.299+g*.587+b*.114)>188, lowSat=(max-min)<65;
+    if(bright&&lowSat){rowCounts[y]++;colCounts[x]++}
+  }
+  // Use rows with enough bright pixels to find likely subtitle lines, ignoring isolated highlights.
+  const rowThreshold=Math.max(5,Math.floor(cw*.002));
+  let rows=[];for(let y=0;y<ch;y++)if(rowCounts[y]>=rowThreshold)rows.push(y);
+  let top=0,bottom=ch-1;
+  if(rows.length>3){
+    // Prefer the densest connected band near the bottom rather than scattered white highlights.
+    const bands=[];let a=rows[0],last=rows[0];
+    for(let k=1;k<rows.length;k++){if(rows[k]-last>Math.max(8,Math.round(scale*4))){bands.push([a,last]);a=rows[k]}last=rows[k]}bands.push([a,last]);
+    const candidates=bands.filter(([a,b])=>b-a>=Math.round(scale*5));
+    if(candidates.length){const band=candidates.sort((A,B)=>((B[1]-B[0]+1)*Math.max(...rowCounts.slice(B[0],B[1]+1)))-((A[1]-A[0]+1)*Math.max(...rowCounts.slice(A[0],A[1]+1))))[0];top=Math.max(0,band[0]-Math.round(scale*8));bottom=Math.min(ch-1,band[1]+Math.round(scale*8))}
+  }
+  let left=0,right=cw-1;
+  for(let x=0;x<cw;x++){let count=0;for(let y=top;y<=bottom;y++){const i=(y*cw+x)*4;const r=px[i],g=px[i+1],b=px[i+2];if((r*.299+g*.587+b*.114)>188&&(Math.max(r,g,b)-Math.min(r,g,b))<65)count++}if(count>Math.max(2,Math.floor((bottom-top)*.004))){left=x;break}}
+  for(let x=cw-1;x>=0;x--){let count=0;for(let y=top;y<=bottom;y++){const i=(y*cw+x)*4;const r=px[i],g=px[i+1],b=px[i+2];if((r*.299+g*.587+b*.114)>188&&(Math.max(r,g,b)-Math.min(r,g,b))<65)count++}if(count>Math.max(2,Math.floor((bottom-top)*.004))){right=x;break}}
+  const pad=Math.round(scale*10);left=Math.max(0,left-pad);right=Math.min(cw-1,right+pad);
+  const variants=[];
+  const crop=makeCanvas(right-left+1,bottom-top+1);crop.getContext('2d').drawImage(base,left,top,crop.width,crop.height,0,0,crop.width,crop.height);
+  variants.push({canvas:base,label:'下方區域原圖'});
+  if(crop.width>80&&crop.height>15)variants.push({canvas:crop,label:'字幕候選裁切'});
+  // Grayscale contrast variant.
+  const gray=makeCanvas(base.width,base.height),gctx=gray.getContext('2d',{willReadFrequently:true});gctx.drawImage(base,0,0);const gi=gctx.getImageData(0,0,gray.width,gray.height);
+  for(let i=0;i<gi.data.length;i+=4){const v=.299*gi.data[i]+.587*gi.data[i+1]+.114*gi.data[i+2];const c=Math.max(0,Math.min(255,(v-128)*1.6+128));gi.data[i]=gi.data[i+1]=gi.data[i+2]=c}gctx.putImageData(gi,0,0);variants.push({canvas:gray,label:'灰階對比'});
+  // Otsu-style threshold variant, preserving the dark stroke and white fill as a separate OCR attempt.
+  const bw=makeCanvas(base.width,base.height),wctx=bw.getContext('2d',{willReadFrequently:true});wctx.drawImage(gray,0,0);const wi=wctx.getImageData(0,0,bw.width,bw.height);for(let i=0;i<wi.data.length;i+=4){const v=wi.data[i]>165?255:0;wi.data[i]=wi.data[i+1]=wi.data[i+2]=v}wctx.putImageData(wi,0,0);variants.push({canvas:bw,label:'二值化'});
+  return variants;
+}
 function cleanOcrText(raw,lang){let s=(raw||'').replace(/[\r\n\t]+/g,' ').replace(/\s+/g,'');if(lang==='chi_tra')s=s.replace(/[A-Za-z]+/g,'');if(lang==='eng')s=s.replace(/[\u3400-\u9fff]/g,'');s=normalizePunctuation(s);return s}
 function hasMeaningfulText(s,lang){if(!s)return false;if(lang==='chi_tra')return /[\u3400-\u9fff]/.test(s);if(lang==='eng')return /[A-Za-z0-9]/.test(s);return /[\u3400-\u9fffA-Za-z0-9]/.test(s)}
-async function recognizeBatch(force=false){if(busy||!items.length)return;if(!window.Tesseract){setStatus('OCR 程式載入失敗，請確認網路連線後重新整理。','error');return}busy=true;render();$('progress').style.width='0%';try{const lang=$('lang').value;setStatus('正在載入 OCR 引擎與語言資料，第一次可能需要一些時間……');worker=await Tesseract.createWorker(lang,1,{logger:m=>{if(m.status==='recognizing text'){const current=Number(m.progress||0);$('progress').style.width=Math.round(current*100)+'%'}}});await worker.setParameters({preserve_interword_spaces:'0',tessedit_pageseg_mode:'11'});for(let i=0;i<items.length;i++){const it=items[i];if(it.done&&!force)continue;setStatus(`正在辨識第 ${i+1}/${items.length} 張：${it.file.name}`);try{const canvas=await prepareCrop(it.file);let result=await worker.recognize(canvas);let raw=result.data.text||'';let confidence=Number(result.data.confidence||0);let cleaned=cleanOcrText(raw,lang);let meaningful=hasMeaningfulText(cleaned,lang);if(!meaningful||confidence<28){await worker.setParameters({tessedit_pageseg_mode:'6'});const retry=await worker.recognize(canvas);const retryText=cleanOcrText(retry.data.text||'',lang);const retryConf=Number(retry.data.confidence||0);if(hasMeaningfulText(retryText,lang)&&(retryConf>confidence||!meaningful)){cleaned=retryText;confidence=retryConf;meaningful=hasMeaningfulText(cleaned,lang)}await worker.setParameters({tessedit_pageseg_mode:'11'});}it.lowConfidence=!meaningful||confidence<35;it.text=meaningful?cleaned:'表情包';it.done=true;it.error=false;it.confidence=confidence;}catch(e){console.error(e);it.error=true;it.done=false;it.lowConfidence=true;it.text='表情包'}render();$('progress').style.width=Math.round((i+1)/items.length*100)+'%'}await worker.terminate();worker=null;setStatus(force?'重新辨識完成。低信心結果請特別檢查，再下載 ZIP。':'辨識完成。沒有找到可信文字的圖片已暫命名為「表情包」，請檢查低信心結果。','success')}catch(e){console.error(e);setStatus('OCR 初始化失敗：'+(e.message||e)+'。請確認網路連線後再試。','error');if(worker){try{await worker.terminate()}catch{}worker=null}}finally{busy=false;render()}}
+async function recognizeBatch(force=false){if(busy||!items.length)return;if(!window.Tesseract){setStatus('OCR 程式載入失敗，請確認網路連線後重新整理。','error');return}busy=true;render();$('progress').style.width='0%';try{const lang=$('lang').value;setStatus('正在載入 OCR 引擎與語言資料，第一次可能需要一些時間……');worker=await Tesseract.createWorker(lang,1,{logger:m=>{if(m.status==='recognizing text'){const current=Number(m.progress||0);$('progress').style.width=Math.round(current*100)+'%'}}});await worker.setParameters({preserve_interword_spaces:'0',tessedit_pageseg_mode:'11'});for(let i=0;i<items.length;i++){const it=items[i];if(it.done&&!force)continue;setStatus(`正在辨識第 ${i+1}/${items.length} 張：${it.file.name}`);try{const variants=await prepareVariants(it.file);let best={text:'',confidence:-1,meaningful:false,label:''};for(const variant of variants){for(const psm of ['11','6']){await worker.setParameters({tessedit_pageseg_mode:psm});const result=await worker.recognize(variant.canvas);const cleaned=cleanOcrText(result.data.text||'',lang);const confidence=Number(result.data.confidence||0);const meaningful=hasMeaningfulText(cleaned,lang);const score=(meaningful?confidence:confidence-100)+(cleaned.length>1?4:0);if(score>best.score||best.score===undefined)best={text:cleaned,confidence,meaningful,label:variant.label,score};}}await worker.setParameters({tessedit_pageseg_mode:'11'});it.confidence=best.confidence;it.method=best.label;it.lowConfidence=!best.meaningful||best.confidence<45||best.text.length<2;it.text=best.meaningful?best.text:'表情包';it.done=true;it.error=false;}catch(e){console.error(e);it.error=true;it.done=false;it.lowConfidence=true;it.text='表情包'}render();$('progress').style.width=Math.round((i+1)/items.length*100)+'%'}await worker.terminate();worker=null;setStatus(force?'重新辨識完成。低信心結果請特別檢查，再下載 ZIP。':'辨識完成。沒有找到可信文字的圖片已暫命名為「表情包」，請檢查低信心結果。','success')}catch(e){console.error(e);setStatus('OCR 初始化失敗：'+(e.message||e)+'。請確認網路連線後再試。','error');if(worker){try{await worker.terminate()}catch{}worker=null}}finally{busy=false;render()}}
 $('runBtn').addEventListener('click',()=>recognizeBatch(false));
 $('rerunBtn').addEventListener('click',()=>{if(confirm('重新辨識全部圖片？已手動修改的字幕也會被新的 OCR 結果取代。'))recognizeBatch(true)});
 function makeCsv(rows){return '\ufeff'+rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n')}
